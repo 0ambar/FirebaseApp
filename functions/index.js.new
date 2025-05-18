@@ -1,0 +1,126 @@
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+
+admin.initializeApp();
+
+// Función para enviar notificación a un token específico
+exports.sendNotification = functions.https.onCall(async (data, context) => {
+  // Verificar si el usuario está autenticado
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      "unauthenticated",
+      "El usuario debe estar autenticado"
+    );
+  }
+
+  const { title, message, token } = data;
+
+  if (!title || !message || !token) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Se requieren título, mensaje y token"
+    );
+  }
+
+  const payload = {
+    notification: {
+      title,
+      body: message,
+    },
+    data: {
+      title,
+      message,
+      click_action: "FLUTTER_NOTIFICATION_CLICK",
+    },
+  };
+
+  try {
+    await admin.messaging().sendToDevice(token, payload);
+    return { success: true };
+  } catch (error) {
+    throw new functions.https.HttpsError("internal", error.message);
+  }
+});
+
+// Función para enviar notificación a un tema
+exports.sendNotificationToTopic = functions.https.onCall(async (data, context) => {
+  // Verificar si el usuario está autenticado
+  if (!context.auth) {
+    throw new functions.https.HttpsError(
+      "unauthenticated",
+      "El usuario debe estar autenticado"
+    );
+  }
+
+  const { title, message, topic } = data;
+
+  if (!title || !message || !topic) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "Se requieren título, mensaje y tema"
+    );
+  }
+
+  const payload = {
+    notification: {
+      title,
+      body: message,
+    },
+    data: {
+      title,
+      message,
+      click_action: "FLUTTER_NOTIFICATION_CLICK",
+    },
+  };
+
+  try {
+    await admin.messaging().sendToTopic(topic, payload);
+    return { success: true };
+  } catch (error) {
+    throw new functions.https.HttpsError("internal", error.message);
+  }
+});
+
+// Función que se ejecuta cuando se crea una nueva notificación en Firestore
+exports.onNewNotification = functions.firestore
+  .document("notifications/{notificationId}")
+  .onCreate(async (snapshot, context) => {
+    const notificationData = snapshot.data();
+    const { title, message, receiverUid } = notificationData;
+
+    // Obtener el token FCM del destinatario
+    try {
+      const userDoc = await admin.firestore().collection("users").doc(receiverUid).get();
+      
+      if (!userDoc.exists) {
+        console.log("Usuario no encontrado:", receiverUid);
+        return;
+      }
+      
+      const userData = userDoc.data();
+      const token = userData.fcmToken;
+      
+      if (!token) {
+        console.log("Token no disponible para el usuario:", receiverUid);
+        return;
+      }
+      
+      // Enviar notificación push
+      const payload = {
+        notification: {
+          title,
+          body: message,
+        },
+        data: {
+          title,
+          message,
+          notificationId: context.params.notificationId,
+          click_action: "FLUTTER_NOTIFICATION_CLICK",
+        },
+      };
+      
+      return admin.messaging().sendToDevice(token, payload);
+    } catch (error) {
+      console.error("Error al enviar notificación:", error);
+    }
+  });

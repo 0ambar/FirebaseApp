@@ -1,0 +1,203 @@
+const functions = require('firebase-functions');
+const admin = require('firebase-admin');
+
+admin.initializeApp();
+
+// Función para enviar notificación a un token específico
+exports.sendNotification = functions.https.onCall(async (data, context) => {
+    // Verificar si el usuario está autenticado
+    if (!context.auth) {
+        throw new functions.https.HttpsError(
+            'unauthenticated',
+            'El usuario debe estar autenticado',
+        );
+    }
+
+    const {title, message, token} = data;
+
+    if (!title || !message || !token) {
+        throw new functions.https.HttpsError(
+            'invalid-argument',
+            'Se requieren título, mensaje y token',
+        );
+    }
+
+    console.log('Enviando notificación a token:', token);
+    console.log('Título:', title);
+    console.log('Mensaje:', message);
+
+    // Simplificamos el payload para enfocarnos en lo esencial
+    const payload = {
+        notification: {
+            title,
+            body: message,
+        },
+        data: {
+            title,
+            message,
+            timestamp: Date.now().toString(),
+            source: 'admin-notification'
+        },
+        android: {
+            priority: 'high',
+            notification: {
+                channel_id: 'firebaseapp_channel',
+                priority: 'high'
+            }
+        }
+    };
+
+    try {
+        // Usar sendToDevice en lugar de cualquier otra función
+        const response = await admin.messaging().send({
+            token: token,
+            notification: {
+                title,
+                body: message
+            },
+            android: {
+                priority: 'high',
+                notification: {
+                    channel_id: 'firebaseapp_channel'
+                }
+            },
+            data: {
+                title,
+                message,
+                timestamp: Date.now().toString(),
+                source: 'admin-notification'
+            }
+        });
+        
+        console.log('FCM Response:', JSON.stringify(response));
+        return {success: true, messageId: response};
+    } catch (error) {
+        console.error('Error sending message:', error);
+        // Incluir más detalles sobre el error
+        console.error('Error code:', error.code);
+        console.error('Error details:', error.errorInfo);
+        throw new functions.https.HttpsError('internal', `Error al enviar notificación: ${error.message}`);
+    }
+});
+
+// Función para enviar notificación a un tema
+exports.sendNotificationToTopic = functions.https.onCall(async (data, context) => {
+    // Verificar si el usuario está autenticado
+    if (!context.auth) {
+        throw new functions.https.HttpsError(
+            'unauthenticated',
+            'El usuario debe estar autenticado',
+        );
+    }
+
+    const {title, message, topic} = data;
+
+    if (!title || !message || !topic) {
+        throw new functions.https.HttpsError(
+            'invalid-argument',
+            'Se requieren título, mensaje y tema',
+        );
+    }
+    
+    console.log(`Enviando notificación a tema '${topic}':`, title, message);
+
+    const payload = {
+        data: {
+            title,
+            message,
+            timestamp: Date.now().toString(),
+            source: 'topic-notification'
+        },
+        android: {
+            priority: 'high',
+            notification: {
+                channel_id: 'firebaseapp_channel',
+                priority: 'high'
+            }
+        }
+    };
+
+    try {
+        const response = await admin.messaging().sendToTopic(topic, payload);
+        console.log('FCM Response for topic notification:', response);
+        return {success: true, messageId: response};
+    } catch (error) {
+        console.error('Error sending topic notification:', error);
+        console.error('Error code:', error.code);
+        console.error('Error details:', error.errorInfo);
+        throw new functions.https.HttpsError('internal', `Error al enviar notificación: ${error.message}`);
+    }
+});
+
+// Función que se ejecuta cuando se crea una nueva notificación en Firestore
+exports.onNewNotification = functions.firestore
+    .document('notifications/{notificationId}')
+    .onCreate(async (snapshot, context) => {
+        const notificationData = snapshot.data();
+        const {title, message, receiverUid} = notificationData;
+
+        // Detallamos la operación para seguimiento
+        console.log(`Procesando nueva notificación en Firestore: ID=${context.params.notificationId}`);
+        console.log(`- Para usuario: ${receiverUid}`);
+        console.log(`- Título: ${title}`);
+        console.log(`- Mensaje: ${message}`);
+
+        // Obtener el token FCM del destinatario
+        try {
+            const userDoc = await admin
+                .firestore()
+                .collection('users')
+                .doc(receiverUid)
+                .get();
+
+            if (!userDoc.exists) {
+                console.log('Usuario no encontrado:', receiverUid);
+                return null;
+            }
+
+            const userData = userDoc.data();
+            const token = userData.fcmToken;
+
+            if (!token) {
+                console.log('Token no disponible para el usuario:', receiverUid);
+                return null;
+            }
+
+            console.log(`Enviando a token FCM: ${token}`);
+
+            // Enviar notificación push - usando solo datos para mayor control en el cliente
+            const payload = {
+                data: {
+                    title,
+                    message,
+                    notificationId: context.params.notificationId,
+                    timestamp: Date.now().toString(),
+                    source: 'firestore-notification'
+                },
+                android: {
+                    priority: 'high',
+                    notification: {
+                        channel_id: 'firebaseapp_channel',
+                        priority: 'high',
+                    }
+                }
+            };
+
+            const response = await admin.messaging().sendToDevice(token, payload);
+            console.log('FCM Response:', JSON.stringify(response));
+            
+            // Verificar errores y reportarlos
+            if (response.failureCount > 0) {
+                const failures = response.results.map((result, index) => {
+                    return result.error ? `Token[${index}]: ${result.error.code} - ${result.error.message}` : null;
+                }).filter(Boolean);
+                console.error('FCM failures:', failures);
+            }
+            
+            return {success: true, messageId: response.successCount};
+        } catch (error) {
+            console.error('Error al enviar notificación:', error);
+            console.error('Error detalles:', error.errorInfo || error);
+            return {success: false, error: error.message};
+        }
+    });
