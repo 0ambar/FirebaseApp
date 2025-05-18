@@ -155,11 +155,29 @@ exports.onNewNotification = functions.firestore
         return { success: false, error: "FCM token not available" };
       }
       
-      console.log("Would send notification to token:", token);
-      
-      // For testing, just return success without trying to send
-      return { success: true, message: "Test mode - notification logged but not sent" };
+      // Construct the message payload
+      const payload = {
+        notification: {
+          title: title,
+          body: message,
+        },
+        data: { // Optional: include any data you want to send with the notification
+          title: title,
+          message: message,
+          click_action: "FLUTTER_NOTIFICATION_CLICK", // Ensure your app handles this
+        },
+        token: token, // Specify the recipient token
+      };
+
+      // Send the message
+      console.log("Attempting to send notification to token:", token);
+      await admin.messaging().send(payload); // Using send() which is more flexible
+      console.log("Notification sent successfully to token:", token);
+      return { success: true, message: "Notification sent successfully" };
+
     } catch (error) {
       console.error("Error al enviar notificación:", error);
+      // Return a more specific error or rethrow
+      return { success: false, error: `Error sending notification: ${error.message}` };
     }
   });
